@@ -93,6 +93,48 @@
       margin-bottom: 20px;
       letter-spacing: 0.02em;
     }
+    .auth-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .browser-select {
+      padding: 8px 12px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--fg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      outline: none;
+      cursor: pointer;
+    }
+    .browser-select:focus { border-color: var(--accent); }
+    .auth-hint {
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+      flex: 1;
+      min-width: 220px;
+      line-height: 1.45;
+    }
+    .auth-btn {
+      padding: 8px 12px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--fg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .auth-btn:hover { border-color: var(--muted); }
+    .auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .controls {
       display: flex;
@@ -397,6 +439,14 @@
       </div>
       <button class="fetch-btn" id="goBtn" onclick="go()">Fetch</button>
     </div>
+    <div class="auth-row">
+      <select id="browserAuth" class="browser-select" aria-label="Browser cookies">
+        <option value="auto">This browser (auto)</option>
+        <option value="none">No site login</option>
+      </select>
+      <button type="button" class="auth-btn" id="authRefreshBtn" onclick="refreshLogin()">Save login</button>
+      <p class="auth-hint" id="authHint">The ReClip page cannot read Douyin cookies. Save login once (Keychain: Always Allow); later fetches reuse it.</p>
+    </div>
 
     <div id="cards" class="cards"></div>
 
@@ -411,14 +461,142 @@
     let currentFormat = 'video';
     let cardData = [];
 
+    function selectedBrowser() {
+      return document.getElementById('browserAuth').value || 'auto';
+    }
+
+    function authPayload() {
+      return { browser: selectedBrowser() };
+    }
+
+    async function initAuth() {
+      const select = document.getElementById('browserAuth');
+      const saved = localStorage.getItem('reclip.browser');
+      try {
+        const res = await fetch('/api/auth?browser=' + encodeURIComponent(saved || 'auto'));
+        const data = await res.json();
+        if (!select.dataset.filled) {
+          (data.browsers || []).forEach(b => {
+            const opt = document.createElement('option');
+            opt.value = b.id;
+            opt.textContent = b.label;
+            select.appendChild(opt);
+          });
+          select.dataset.filled = '1';
+        }
+        const pick = saved || data.detected || data.default || 'auto';
+        if ([...select.options].some(o => o.value === pick)) select.value = pick;
+        applyAuthStatus(data);
+      } catch {
+        document.getElementById('authHint').textContent = 'Could not detect a browser profile. Fetch will try without site login.';
+      }
+      if (!select.dataset.bound) {
+        select.addEventListener('change', () => {
+          localStorage.setItem('reclip.browser', select.value);
+          loadAuthStatus();
+        });
+        select.dataset.bound = '1';
+      }
+    }
+
+    function applyAuthStatus(data) {
+      const hint = document.getElementById('authHint');
+      const btn = document.getElementById('authRefreshBtn');
+      const chosen = selectedBrowser() === 'auto' ? (data.detected || data.using) : selectedBrowser();
+      const label = (data.browsers || []).find(b => b.id === chosen);
+      const name = (label && label.label) || 'your browser';
+      const login = data.login || {};
+      if (selectedBrowser() === 'none') {
+        btn.textContent = 'Save login';
+        btn.disabled = true;
+        hint.textContent = 'Site login is off for this fetch.';
+        return;
+      }
+      btn.disabled = false;
+      if (login.saved) {
+        const hours = Math.max(0, Math.round((login.age_seconds || 0) / 3600));
+        btn.textContent = 'Refresh login';
+        hint.textContent = `${name} login is saved (${hours}h ago). Keychain will not prompt until you refresh.`;
+      } else if (data.cookies_file) {
+        btn.textContent = 'Refresh login';
+        hint.textContent = `Using cookies.txt. Optional: save ${name} login once if a site still asks.`;
+      } else if (!data.browsers || !data.browsers.length) {
+        btn.disabled = true;
+        hint.textContent = 'No local browser profile found (common in Docker). Export cookies.txt and set RECLIP_COOKIES_FILE.';
+      } else {
+        btn.textContent = 'Save login';
+        hint.textContent = `Save ${name} login once. If macOS Keychain appears, click Always Allow — the page cannot read other sites’ cookies itself.`;
+      }
+    }
+
+    async function loadAuthStatus() {
+      const res = await fetch('/api/auth?browser=' + encodeURIComponent(selectedBrowser()));
+      applyAuthStatus(await res.json());
+    }
+
+    async function refreshLogin() {
+      const btn = document.getElementById('authRefreshBtn');
+      const hint = document.getElementById('authHint');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+      try {
+        const res = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(authPayload()),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          hint.textContent = data.error || 'Could not save login.';
+          btn.textContent = 'Save login';
+          btn.disabled = false;
+          return;
+        }
+        await loadAuthStatus();
+      } catch {
+        hint.textContent = 'Could not save login. Check Keychain and retry.';
+        btn.disabled = false;
+        btn.textContent = 'Save login';
+      }
+    }
+
+    initAuth();
+
     function setFormat(btn) {
       document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentFormat = btn.dataset.format;
     }
 
+    function normalizeMediaUrl(url) {
+      const raw = String(url || '').trim().replace(/&amp;/g, '&');
+      try {
+        const u = new URL(raw);
+        const host = u.hostname.replace(/^www\./, '').replace(/^m\./, '');
+        if (host === 'douyin.com' || host === 'iesdouyin.com') {
+          const id = u.searchParams.get('modal_id')
+            || u.searchParams.get('vid')
+            || u.searchParams.get('aweme_id')
+            || (raw.match(/[?&]modal_id=(\d+)/) || [])[1]
+            || (raw.match(/[?&]vid=(\d+)/) || [])[1]
+            || (u.pathname.match(/\/(?:video|note|share\/video)\/(\d+)/) || [])[1];
+          if (id && /^\d+$/.test(id)) return `https://www.douyin.com/video/${id}`;
+        }
+        if (host === 'xiaohongshu.com') {
+          const m = u.pathname.match(/\/user\/profile\/[^/]+\/([a-f0-9]+)/i);
+          if (m) return `https://www.xiaohongshu.com/explore/${m[1]}`;
+        }
+      } catch {
+        const id = (raw.match(/[?&]modal_id=(\d+)/) || raw.match(/[?&]vid=(\d+)/) || [])[1];
+        if (id) return `https://www.douyin.com/video/${id}`;
+      }
+      return raw;
+    }
+
     function parseUrls(text) {
-      return [...new Set(text.split(/[\s,]+/).map(u => u.trim()).filter(u => u.startsWith('http')))];
+      return [...new Set(
+        text.split(/[\s,]+/).map(u => u.trim()).filter(u => u.startsWith('http')).map(normalizeMediaUrl)
+      )];
     }
 
     function fmtDur(s) {
@@ -435,9 +613,13 @@
     }
 
     function friendlyError(err) {
+      if (err.includes('profile page')) return err;
       if (err.includes('Unsupported URL')) return 'This URL is not supported';
       if (err.includes('Video unavailable')) return 'Video is unavailable or private';
       if (err.includes('Private video')) return 'This video is private';
+      if (/sign in|log in|login required|fresh cookies|cookies are needed|not a bot/i.test(err)) {
+        return 'This site needs a logged-in session. Stay signed in in this browser and retry. If macOS asked for Keychain access, click Allow.';
+      }
       if (err.includes('HTTP Error 403')) return 'Access denied by the platform';
       if (err.includes('HTTP Error 404')) return 'Video not found';
       if (err.includes('copyright')) return 'Video blocked due to copyright';
@@ -468,7 +650,7 @@
           const res = await fetch('/api/playlist', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: urls[i] }),
+            body: JSON.stringify({ url: urls[i], ...authPayload() }),
           });
           const data = await res.json();
           if (data.urls) {
@@ -488,7 +670,7 @@
           const res = await fetch('/api/info', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url }),
+            body: JSON.stringify({ url, ...authPayload() }),
           });
           const data = await res.json();
           if (data.error) {
@@ -634,6 +816,7 @@
             format: currentFormat,
             format_id: c.selectedFormatId,
             title: c.title || '',
+            ...authPayload(),
           }),
         });
         const data = await res.json();
