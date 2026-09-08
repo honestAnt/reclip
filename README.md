@@ -18,6 +18,7 @@ https://github.com/user-attachments/assets/419d3e50-c933-444b-8cab-a9724986ba05
 - Automatic URL deduplication
 - Clean, responsive UI — no frameworks, no build step
 - Single Python file backend (~150 lines)
+- 新增了提取认证信息（比如d0uyin等需要授权后才能访问的视频）
 
 ## Quick Start
 
