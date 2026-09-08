@@ -9,3 +9,5 @@ assets/*.mov
 .env.production
 .env.development
 .auth/
+cookies.txt
+*.cookies.txt
